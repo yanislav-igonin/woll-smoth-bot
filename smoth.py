@@ -1,0 +1,147 @@
+"""Wol Smoth filters: classic landmark warps, no generative models."""
+import os
+
+import cv2
+import mediapipe as mp
+import numpy as np
+
+fm = mp.solutions.face_mesh
+_detector = cv2.FaceDetectorYN.create(os.path.join(os.path.dirname(__file__), "models", "yunet.onnx"), "", (320, 320), 0.7)
+_mesh = fm.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True)
+
+
+def _idx(conns):
+    return sorted({i for c in conns for i in c})
+
+
+OVAL = _idx(fm.FACEMESH_FACE_OVAL)
+FEATURES = _idx(fm.FACEMESH_LEFT_EYE | fm.FACEMESH_RIGHT_EYE | fm.FACEMESH_LEFT_EYEBROW
+                | fm.FACEMESH_RIGHT_EYEBROW | fm.FACEMESH_LIPS | fm.FACEMESH_NOSE)
+EYES = [_idx(fm.FACEMESH_LEFT_EYE), _idx(fm.FACEMESH_RIGHT_EYE)]
+
+
+def faces(img):
+    """Landmarks (468x2 px) for every face. YuNet finds faces of any size (group shots too),
+    then Face Mesh runs on an upscaled crop of each one; the mesh model alone only sees close-ups."""
+    h, w = img.shape[:2]
+    k = min(1.0, 1600 / max(h, w))
+    small = cv2.resize(img, None, fx=k, fy=k) if k < 1 else img
+    _detector.setInputSize((small.shape[1], small.shape[0]))
+    dets = _detector.detect(small)[1]
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    out = []
+    for d in [] if dets is None else dets:
+        bx, by, bw, bh = d[:4] / k
+        cx, cy, side = bx + bw / 2, by + bh / 2, max(bw, bh) * 1.8
+        x0, y0 = int(max(cx - side / 2, 0)), int(max(cy - side / 2, 0))
+        x1, y1 = int(min(cx + side / 2, w)), int(min(cy + side / 2, h))
+        crop = rgb[y0:y1, x0:x1]
+        if min(crop.shape[:2]) < 20:
+            continue
+        if crop.shape[0] < 256:  # mesh is unreliable on tiny crops
+            crop = cv2.resize(crop, None, fx=256 / crop.shape[0], fy=256 / crop.shape[0], interpolation=cv2.INTER_CUBIC)
+        res = _mesh.process(np.ascontiguousarray(crop))
+        if not res.multi_face_landmarks:
+            continue
+        lm = res.multi_face_landmarks[0].landmark
+        out.append(np.array([(x0 + p.x * (x1 - x0), y0 + p.y * (y1 - y0)) for p in lm[:468]], np.float32))
+    return out
+
+
+def pinch(img, center, axes, angle, sx, sy, inner):
+    """Shrink content inside an ellipse toward `center`: by (sx, sy) at the core (radius <= inner),
+    easing back to identity at the ellipse edge. Skin in between gets stretched, so no holes."""
+    h, w = img.shape[:2]
+    ax, ay = max(axes[0], 1), max(axes[1], 1)
+    pad = int(max(ax, ay)) + 2
+    x0, y0 = max(int(center[0]) - pad, 0), max(int(center[1]) - pad, 0)
+    x1, y1 = min(int(center[0]) + pad, w), min(int(center[1]) + pad, h)
+    ys, xs = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    c, s = np.cos(np.radians(angle)), np.sin(np.radians(angle))
+    dx, dy = xs - center[0], ys - center[1]
+    u, v = (dx * c + dy * s) / ax, (-dx * s + dy * c) / ay  # ellipse-local, edge at r=1
+    r = np.sqrt(u * u + v * v) + 1e-6
+    # source radius per dest radius, per axis: core (src r<=inner) scaled by s, ring linearly back to r=1.
+    # Monotonic by construction, so no folds/duplicated features.
+    def src(k):
+        a = inner * k
+        return np.where(r < a, r / k, inner + (1 - inner) * (r - a) / (1 - a)) / r
+    u, v = u * src(sx), v * src(sy)
+    mx = center[0] + (u * ax * c - v * ay * s)
+    my = center[1] + (u * ax * s + v * ay * c)
+    roi = img[y0:y1, x0:x1]
+    warped = cv2.remap(img, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    m = (r < 1)[..., None]
+    img[y0:y1, x0:x1] = np.where(m, warped, roi)
+    return img
+
+
+def _ellipse(pts, grow):
+    (cx, cy), (a, b), ang = cv2.fitEllipse(pts)
+    return (cx, cy), (a / 2 * grow, b / 2 * grow), ang
+
+
+def tiny_face(img, lm, scale=0.5):
+    """The meme way: paint skin over the features, then paste them back shrunk with a feathered edge."""
+    h, w = img.shape[:2]
+    hull = cv2.convexHull(lm[FEATURES]).astype(np.int32)
+    size = np.ptp(lm[OVAL], 0).max()
+    feather = max(int(size * 0.04) | 1, 3)
+    mask = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(mask, hull, 255)
+    mask = cv2.dilate(mask, np.ones((feather, feather), np.uint8))
+    # skin fill: inpaint at low res (fast, smooth), blur, upscale back into the hole
+    x, y, bw, bh = cv2.boundingRect(cv2.dilate(mask, np.ones((feather * 4, feather * 4), np.uint8)))
+    roi, m = img[y:y + bh, x:x + bw], mask[y:y + bh, x:x + bw]
+    k = min(1.0, 160 / max(bw, bh))
+    small = cv2.inpaint(cv2.resize(roi, None, fx=k, fy=k), cv2.resize(m, None, fx=k, fy=k), 5, cv2.INPAINT_TELEA)
+    skin = cv2.resize(cv2.GaussianBlur(small, (0, 0), 3), (bw, bh))
+    a = cv2.GaussianBlur(m, (0, 0), feather)[..., None] / 255.0
+    base = img.copy()
+    base[y:y + bh, x:x + bw] = (skin * a + roi * (1 - a)).astype(np.uint8)
+    # shrunk features, anchored a bit above the center so the mouth stays on the face
+    cx, cy = lm[FEATURES].mean(0)
+    M = np.array([[scale, 0, cx * (1 - scale)], [0, scale, cy * (1 - scale) - size * 0.03]], np.float32)
+    feat = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+    fa = cv2.GaussianBlur(cv2.warpAffine(cv2.erode(mask, np.ones((feather, feather), np.uint8)), M, (w, h)),
+                          (0, 0), feather * scale)[..., None] / 255.0
+    return (feat * fa + base * (1 - fa)).astype(np.uint8)
+
+
+def tiny_eyes(img, lm, scale=0.55):
+    for eye in EYES:
+        c, (a, b), ang = _ellipse(lm[eye], 1.0)
+        # eye contour is a thin ellipse; give the warp room to ease out over the lids
+        img = pinch(img, c, (max(a, b) * 1.4, max(a, b) * 1.4), ang, scale, scale, 0.5)
+    return img
+
+
+def squint(img, lm, scale=0.45):
+    for eye in EYES:
+        p = lm[eye]
+        c = p.mean(0)
+        v = p[p[:, 0].argmax()] - p[p[:, 0].argmin()]  # corner to corner
+        ang = np.degrees(np.arctan2(v[1], v[0]))
+        half = np.linalg.norm(v) / 2
+        img = pinch(img, c, (half * 1.5, half * 1.1), ang, 1.0, scale, 0.35)
+    return img
+
+
+EFFECTS = {"tiny": tiny_face, "eyes": tiny_eyes, "squint": squint}
+
+
+def apply(img, effect):
+    found = faces(img)
+    for lm in found:
+        img = EFFECTS[effect](img, lm)
+    return img, len(found)
+
+
+if __name__ == "__main__":
+    import sys
+    src = cv2.imread(sys.argv[1])
+    assert src is not None, sys.argv[1]
+    for name in EFFECTS:
+        out, n = apply(src.copy(), name)
+        cv2.imwrite(f"{sys.argv[1].rsplit('.', 1)[0]}_{name}.jpg", out)
+        print(name, n, "faces")
