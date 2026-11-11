@@ -14,18 +14,9 @@ def _idx(conns):
     return sorted({i for c in conns for i in c})
 
 
-OVAL = _idx(fm.FACEMESH_FACE_OVAL)
 FEATURES = _idx(fm.FACEMESH_LEFT_EYE | fm.FACEMESH_RIGHT_EYE | fm.FACEMESH_LEFT_EYEBROW
                 | fm.FACEMESH_RIGHT_EYEBROW | fm.FACEMESH_LIPS | fm.FACEMESH_NOSE)
 EYES = [_idx(fm.FACEMESH_LEFT_EYE), _idx(fm.FACEMESH_RIGHT_EYE)]
-
-_adj = np.zeros((468, 468), np.float32)
-for _a, _b in fm.FACEMESH_TESSELATION:
-    _adj[_a, _b] = _adj[_b, _a] = 1
-TRIANGLES = np.array(sorted({tuple(sorted((a, b, c))) for a in range(468) for b in np.nonzero(_adj[a])[0]
-                             for c in np.nonzero(_adj[a] * _adj[b])[0]}))
-_avg = _adj / np.maximum(_adj.sum(1, keepdims=True), 1)  # neighbour-mean operator
-
 
 def faces(img):
     """Landmarks (468x2 px) for every face. YuNet finds faces of any size (group shots too),
@@ -88,70 +79,12 @@ def _ellipse(pts, grow):
     return (cx, cy), (a / 2 * grow, b / 2 * grow), ang
 
 
-def _mesh_warp(img, src, dst):
-    """Piecewise-affine warp of the face mesh (each triangle dst -> src) as a dense backward map.
-    Pixels no triangle covers (rounding cracks, eye/mouth holes) get the map by normalized convolution,
-    so there are no seams; outside the face the map is identity."""
-    h, w = img.shape[:2]
-    x, y, bw, bh = cv2.boundingRect(dst)
-    pad = 4
-    x0, y0, x1, y1 = max(x - pad, 0), max(y - pad, 0), min(x + bw + pad, w), min(y + bh + pad, h)
-    gx, gy = np.meshgrid(np.arange(x0, x1, dtype=np.float32), np.arange(y0, y1, dtype=np.float32))
-    disp = np.zeros((y1 - y0, x1 - x0, 2), np.float32)
-    cov = np.zeros((y1 - y0, x1 - x0), np.float32)
-    for t in TRIANGLES:
-        d = dst[t] - [x0, y0]
-        tx, ty, tw, th = cv2.boundingRect(d.astype(np.float32))
-        tx, ty = max(tx, 0), max(ty, 0)
-        sl = (slice(ty, ty + th + 1), slice(tx, tx + tw + 1))
-        m = np.zeros(cov[sl].shape, np.uint8)
-        if not m.size:
-            continue
-        cv2.fillConvexPoly(m, np.round(d - [tx, ty]).astype(np.int32), 1)
-        mm = m.astype(bool)
-        A = cv2.getAffineTransform(dst[t], src[t])
-        px, py = gx[sl][mm], gy[sl][mm]
-        disp[sl][mm] = np.stack([A[0, 0] * px + A[0, 1] * py + A[0, 2] - px,
-                                 A[1, 0] * px + A[1, 1] * py + A[1, 2] - py], 1)
-        cov[sl][mm] = 1
-    face = np.zeros_like(cov, np.uint8)
-    cv2.fillConvexPoly(face, cv2.convexHull(np.round(dst - [x0, y0]).astype(np.int32)), 1)
-    holes = (face > 0) & (cov == 0)
-    if holes.any():
-        sig = max(bw, bh) * 0.03
-        k = cv2.GaussianBlur(cov, (0, 0), sig) + 1e-6
-        fill = cv2.GaussianBlur(disp * cov[..., None], (0, 0), sig) / k[..., None]
-        disp[holes] = fill[holes]
-    mx, my = gx + disp[..., 0], gy + disp[..., 1]
-    img[y0:y1, x0:x1] = cv2.remap(img, mx, my, cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT)
-    return img
-
-
-def tiny_face(img, lm, scale=0.5):
-    """Liquify-style, like the original meme: features shrink as one block, the real skin of the face
-    stretches in to fill the gap (mesh warp, so it keeps its texture), the face outline stays put."""
-    h, w = img.shape[:2]
-    c = lm[FEATURES].mean(0)
-    hull = cv2.convexHull(lm[FEATURES])
-    size = np.ptp(lm[OVAL], 0).max()
-    inner = np.array([cv2.pointPolygonTest(hull, (float(p[0]), float(p[1])), True) > -size * 0.01 for p in lm])
-    fixed = np.zeros(468, bool)
-    fixed[OVAL] = True
-    D = np.zeros((468, 2), np.float32)
-    D[inner] = (lm[inner] - c) * (scale - 1)
-    free = ~(inner | fixed)
-    for _ in range(300):  # harmonic fill: displacement fades smoothly from the features to the outline
-        D[free] = (_avg @ D)[free]
-    src = img.copy()
-    out = _mesh_warp(img, lm, (lm + D).astype(np.float32))
-    # eyes/mouth interiors are holes in the mesh: paste the whole feature block, scaled the same way
-    M = np.array([[scale, 0, c[0] * (1 - scale)], [0, scale, c[1] * (1 - scale)]], np.float32)
-    feat = cv2.warpAffine(src, M, (w, h), flags=cv2.INTER_AREA, borderMode=cv2.BORDER_REFLECT)
-    mask = np.zeros((h, w), np.uint8)
-    cv2.fillConvexPoly(mask, cv2.transform(hull, M).astype(np.int32), 255)
-    f = max(int(size * scale * 0.02), 1)
-    a = cv2.GaussianBlur(cv2.erode(mask, np.ones((f * 2 + 1,) * 2, np.uint8)), (0, 0), f)[..., None] / 255.0
-    return (feat * a + out * (1 - a)).astype(np.uint8)
+def tiny_face(img, lm, scale=0.5, grow=1.8):
+    """Features shrink as one block toward their centre; skin around them stretches in, fading out
+    over an ellipse `grow` times the feature size. A radial pinch can't fold, so turned heads don't
+    tear the way a face-mesh warp did."""
+    c, axes, ang = _ellipse(lm[FEATURES], grow)
+    return pinch(img, c, axes, ang, scale, scale, 1 / grow)
 
 
 def tiny_eyes(img, lm, scale=0.55):
