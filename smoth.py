@@ -4,6 +4,7 @@ import os
 import cv2
 import mediapipe as mp
 import numpy as np
+import seam_carving
 
 fm = mp.solutions.face_mesh
 _detector = cv2.FaceDetectorYN.create(os.path.join(os.path.dirname(__file__), "models", "yunet.onnx"), "", (320, 320), 0.7)
@@ -193,8 +194,27 @@ def big_mouth(img, lm, scale=1.8):
     return pinch(img, c, axes, ang, scale, scale, 0.5)
 
 
+def liquid(img, lm, scale=0.55, work=360):
+    """Content-aware scale on the face only: seam-carve the face crop down to `scale`, stretch it back,
+    blend it in over the face hull so hair and background stay put."""
+    h, w = img.shape[:2]
+    x, y, bw, bh = cv2.boundingRect(lm)
+    cx, cy, side = x + bw / 2, y + bh / 2, max(bw, bh) * 1.3
+    x0, y0 = int(max(cx - side / 2, 0)), int(max(cy - side / 2, 0))
+    x1, y1 = int(min(cx + side / 2, w)), int(min(cy + side / 2, h))
+    crop = img[y0:y1, x0:x1]
+    small = cv2.resize(crop, (work, work), interpolation=cv2.INTER_AREA)  # carving cost grows with size
+    carved = seam_carving.resize(small, (int(work * scale), int(work * scale)))
+    back = cv2.resize(carved, (x1 - x0, y1 - y0), interpolation=cv2.INTER_CUBIC)
+    mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.fillConvexPoly(mask, cv2.convexHull((lm - [x0, y0]).astype(np.int32)), 255)
+    a = cv2.GaussianBlur(mask, (0, 0), max(bw * 0.06, 2))[..., None] / 255.0
+    img[y0:y1, x0:x1] = (back * a + crop * (1 - a)).astype(np.uint8)
+    return img
+
+
 EFFECTS = {"tiny": tiny_face, "eyes": tiny_eyes, "squint": squint, "thatcher": thatcher,
-           "moutheyes": mouth_eyes, "mirror": symmetry, "bigeyes": big_eyes, "bigmouth": big_mouth}
+           "moutheyes": mouth_eyes, "mirror": symmetry, "bigeyes": big_eyes, "bigmouth": big_mouth, "cas": liquid}
 
 
 def apply(img, effect, found=None):
