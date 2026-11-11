@@ -194,23 +194,14 @@ def big_mouth(img, lm, scale=1.8):
     return pinch(img, c, axes, ang, scale, scale, 0.5)
 
 
-def liquid(img, lm, scale=0.55, work=360):
-    """Content-aware scale on the face only: seam-carve the face crop down to `scale`, stretch it back,
-    blend it in over the face hull so hair and background stay put."""
+def liquid(img, scale=0.5, work=640):
+    """Content-aware scale of the whole picture, like the old Face Fucker bot: seam-carve down to `scale`,
+    stretch back. Background goes first, so faces bloat and wobble."""
     h, w = img.shape[:2]
-    x, y, bw, bh = cv2.boundingRect(lm)
-    cx, cy, side = x + bw / 2, y + bh / 2, max(bw, bh) * 1.3
-    x0, y0 = int(max(cx - side / 2, 0)), int(max(cy - side / 2, 0))
-    x1, y1 = int(min(cx + side / 2, w)), int(min(cy + side / 2, h))
-    crop = img[y0:y1, x0:x1]
-    small = cv2.resize(crop, (work, work), interpolation=cv2.INTER_AREA)  # carving cost grows with size
-    carved = seam_carving.resize(small, (int(work * scale), int(work * scale)))
-    back = cv2.resize(carved, (x1 - x0, y1 - y0), interpolation=cv2.INTER_CUBIC)
-    mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
-    cv2.fillConvexPoly(mask, cv2.convexHull((lm - [x0, y0]).astype(np.int32)), 255)
-    a = cv2.GaussianBlur(mask, (0, 0), max(bw * 0.06, 2))[..., None] / 255.0
-    img[y0:y1, x0:x1] = (back * a + crop * (1 - a)).astype(np.uint8)
-    return img
+    k = min(1.0, work / max(h, w))  # carving cost grows with size; the blur from upscaling suits the meme
+    small = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
+    carved = seam_carving.resize(small, (int(small.shape[1] * scale), int(small.shape[0] * scale)))
+    return cv2.resize(carved, (w, h), interpolation=cv2.INTER_CUBIC)
 
 
 EFFECTS = {"tiny": tiny_face, "eyes": tiny_eyes, "squint": squint, "thatcher": thatcher,
@@ -219,6 +210,8 @@ EFFECTS = {"tiny": tiny_face, "eyes": tiny_eyes, "squint": squint, "thatcher": t
 
 def apply(img, effect, found=None):
     found = faces(img) if found is None else found
+    if effect == "cas":  # whole-image effect, once per photo
+        return (liquid(img) if found else img), len(found)
     for lm in found:
         img = EFFECTS[effect](img, lm)
     return img, len(found)
