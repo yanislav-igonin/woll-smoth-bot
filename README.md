@@ -9,6 +9,7 @@ Telegram bot that gives every face in a group photo the *Wol Smoth* (tiny face) 
 - **moutheyes**: the mouth pasted over both eyes.
 - **mirror**: the face rebuilt from its more visible half, mirrored across the midline.
 - **bigeyes** / **bigmouth**: inverse pinch, eyes or mouth blown up.
+- **cas**: liquid rescale (seam carving) of the face only, down to 55% and stretched back.
 
 In a group, any photo (or image file) gets a reply with an album of every effect. Photos without faces are ignored. Reply to a photo with an effect command (`/tiny`, `/thatcher`, ...) to get just that one. The bot needs Group Privacy **off** (BotFather → /setprivacy), or admin rights, to see photos.
 
