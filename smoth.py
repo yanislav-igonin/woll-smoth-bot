@@ -98,17 +98,6 @@ def tiny_eyes(img, lm, scale=0.55):
     return img
 
 
-def squint(img, lm, scale=0.45):
-    for eye in EYES:
-        p = lm[eye]
-        c = p.mean(0)
-        v = p[p[:, 0].argmax()] - p[p[:, 0].argmin()]  # corner to corner
-        ang = np.degrees(np.arctan2(v[1], v[0]))
-        half = np.linalg.norm(v) / 2
-        img = pinch(img, c, (half * 1.5, half * 1.1), ang, 1.0, scale, 0.35)
-    return img
-
-
 def _paste(img, src, M, center, axes, ang, feather):
     """Blend `src` warped by affine M into img inside a soft ellipse; only the ellipse's box is touched."""
     h, w = img.shape[:2]
@@ -204,7 +193,7 @@ def liquid(img, scale=0.5, work=640):
     return cv2.resize(carved, (w, h), interpolation=cv2.INTER_CUBIC)
 
 
-EFFECTS = {"tiny": tiny_face, "eyes": tiny_eyes, "squint": squint, "thatcher": thatcher,
+EFFECTS = {"tiny": tiny_face, "eyes": tiny_eyes, "thatcher": thatcher,
            "moutheyes": mouth_eyes, "mirror": symmetry, "bigeyes": big_eyes, "bigmouth": big_mouth, "cas": liquid}
 
 

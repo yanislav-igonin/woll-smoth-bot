@@ -4,7 +4,6 @@ Telegram bot that gives every face in a group photo the *Wol Smoth* (tiny face) 
 
 - **tiny** (default for any photo): liquify-style pinch. Features shrink to 55% as one block toward their centre and the skin around them stretches in, fading out over an ellipse 2x the feature size. It can't fold, so turned heads don't tear.
 - **eyes**: tiny eyes, via a radial pinch warp.
-- **squint**: eyes squashed vertically.
 - **thatcher**: eyes and mouth flipped upside down in place.
 - **moutheyes**: the mouth pasted over both eyes.
 - **mirror**: the face rebuilt from its more visible half, mirrored across the midline.
