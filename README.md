@@ -2,7 +2,7 @@
 
 Telegram bot that gives every face in a group photo the *Wol Smoth* (tiny face) treatment. No generative AI: YuNet (OpenCV) finds faces, MediaPipe Face Mesh places landmarks, then plain OpenCV does the rest.
 
-- **tiny** (default for any photo): liquify-style pinch. Features shrink to 50% as one block toward their centre and the skin around them stretches in, fading out over an ellipse 1.8x the feature size. It can't fold, so turned heads don't tear.
+- **tiny** (default for any photo): liquify-style pinch. Features shrink to 55% as one block toward their centre and the skin around them stretches in, fading out over an ellipse 2x the feature size. It can't fold, so turned heads don't tear.
 - **eyes**: tiny eyes, via a radial pinch warp.
 - **squint**: eyes squashed vertically.
 

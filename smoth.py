@@ -79,7 +79,7 @@ def _ellipse(pts, grow):
     return (cx, cy), (a / 2 * grow, b / 2 * grow), ang
 
 
-def tiny_face(img, lm, scale=0.5, grow=1.8):
+def tiny_face(img, lm, scale=0.55, grow=2.0):
     """Features shrink as one block toward their centre; skin around them stretches in, fading out
     over an ellipse `grow` times the feature size. A radial pinch can't fold, so turned heads don't
     tear the way a face-mesh warp did."""
