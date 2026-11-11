@@ -5,8 +5,12 @@ Telegram bot that gives every face in a group photo the *Wol Smoth* (tiny face) 
 - **tiny** (default for any photo): liquify-style pinch. Features shrink to 55% as one block toward their centre and the skin around them stretches in, fading out over an ellipse 2x the feature size. It can't fold, so turned heads don't tear.
 - **eyes**: tiny eyes, via a radial pinch warp.
 - **squint**: eyes squashed vertically.
+- **thatcher**: eyes and mouth flipped upside down in place.
+- **moutheyes**: the mouth pasted over both eyes.
+- **mirror**: the face rebuilt from its more visible half, mirrored across the midline.
+- **bigeyes** / **bigmouth**: inverse pinch, eyes or mouth blown up.
 
-In a group, any photo (or image file) gets a reply with the tiny-face version. Photos without faces are ignored. Reply to a photo with `/tiny`, `/eyes` or `/squint` to apply a different filter. The bot needs Group Privacy **off** (BotFather → /setprivacy), or admin rights, to see photos.
+In a group, any photo (or image file) gets a reply with an album of every effect. Photos without faces are ignored. Reply to a photo with an effect command (`/tiny`, `/thatcher`, ...) to get just that one. The bot needs Group Privacy **off** (BotFather → /setprivacy), or admin rights, to see photos.
 
 ## Run
 
@@ -14,7 +18,7 @@ In a group, any photo (or image file) gets a reply with the tiny-face version. P
 uv venv -p 3.11 .venv && uv pip install -p .venv/bin/python -r requirements.txt
 .venv/bin/python test_smoth.py
 BOT_TOKEN=... .venv/bin/python bot.py
-python smoth.py photo.jpg   # writes photo_tiny.jpg, photo_eyes.jpg, photo_squint.jpg
+python smoth.py photo.jpg   # writes photo_<effect>.jpg for every effect
 ```
 
 Docker: `docker build -t woll-smoth . && docker run -e BOT_TOKEN=... woll-smoth`. Uses long polling, so it needs no domain.

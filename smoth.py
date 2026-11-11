@@ -17,6 +17,8 @@ def _idx(conns):
 FEATURES = _idx(fm.FACEMESH_LEFT_EYE | fm.FACEMESH_RIGHT_EYE | fm.FACEMESH_LEFT_EYEBROW
                 | fm.FACEMESH_RIGHT_EYEBROW | fm.FACEMESH_LIPS | fm.FACEMESH_NOSE)
 EYES = [_idx(fm.FACEMESH_LEFT_EYE), _idx(fm.FACEMESH_RIGHT_EYE)]
+LIPS = _idx(fm.FACEMESH_LIPS)
+OVAL = _idx(fm.FACEMESH_FACE_OVAL)
 
 def faces(img):
     """Landmarks (468x2 px) for every face. YuNet finds faces of any size (group shots too),
@@ -106,11 +108,97 @@ def squint(img, lm, scale=0.45):
     return img
 
 
-EFFECTS = {"tiny": tiny_face, "eyes": tiny_eyes, "squint": squint}
+def _paste(img, src, M, center, axes, ang, feather):
+    """Blend `src` warped by affine M into img inside a soft ellipse; only the ellipse's box is touched."""
+    h, w = img.shape[:2]
+    pad = int(max(axes) + feather * 3) + 2
+    x0, y0 = max(int(center[0]) - pad, 0), max(int(center[1]) - pad, 0)
+    x1, y1 = min(int(center[0]) + pad, w), min(int(center[1]) + pad, h)
+    if x1 <= x0 or y1 <= y0:
+        return img
+    M = M.copy()
+    M[:, 2] -= (x0, y0)
+    patch = cv2.warpAffine(src, M, (x1 - x0, y1 - y0), borderMode=cv2.BORDER_REFLECT)
+    m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.ellipse(m, (int(center[0]) - x0, int(center[1]) - y0), (int(axes[0]), int(axes[1])), ang, 0, 360, 255, -1)
+    a = cv2.GaussianBlur(m, (0, 0), max(feather, 1))[..., None] / 255.0
+    img[y0:y1, x0:x1] = (patch * a + img[y0:y1, x0:x1] * (1 - a)).astype(np.uint8)
+    return img
 
 
-def apply(img, effect):
-    found = faces(img)
+def _eye_r(lm, eye):
+    return np.ptp(lm[eye][:, 0]) / 2
+
+
+def thatcher(img, lm):
+    """Eyes and mouth flipped upside down in place."""
+    src = img.copy()
+    for idx, grow in [(EYES[0], 1.9), (EYES[1], 1.9), (LIPS, 1.35)]:
+        c, (a, b), ang = _ellipse(lm[idx], grow)
+        img = _paste(img, src, cv2.getRotationMatrix2D(c, 180, 1.0), c, (a, b), ang, min(a, b) * 0.25)
+    return img
+
+
+def mouth_eyes(img, lm, size=2.0):
+    """The mouth, scaled to `size` x eye width, pasted over both eyes."""
+    src = img.copy()
+    mc, (ma, mb), ang = _ellipse(lm[LIPS], 1.25)
+    for eye in EYES:
+        ec = lm[eye].mean(0)
+        k = _eye_r(lm, eye) * size / max(ma, mb)
+        M = cv2.getRotationMatrix2D(mc, 0, k)
+        M[:, 2] += ec - mc
+        img = _paste(img, src, M, ec, (ma * k, mb * k), ang, mb * k * 0.3)
+    return img
+
+
+def symmetry(img, lm):
+    """Face rebuilt from its more visible half, mirrored across the midline (forehead to chin)."""
+    top, bot = lm[10], lm[152]
+    d = (bot - top) / np.linalg.norm(bot - top)
+    n = np.array([-d[1], d[0]], np.float32)
+    if ((lm[OVAL] - top) @ n).sum() < 0:  # n points to the wider (more visible) half; the other half gets replaced
+        n = -n
+    R = np.eye(2, dtype=np.float32) - 2 * np.outer(n, n)
+    M = np.hstack([R, (top - R @ top)[:, None]]).astype(np.float32)
+    size = np.ptp(lm[OVAL], 0).max()
+    h, w = img.shape[:2]
+    x, y, bw, bh = cv2.boundingRect(lm[OVAL].astype(np.float32))
+    pad = int(size * 0.1)
+    x0, y0, x1, y1 = max(x - pad, 0), max(y - pad, 0), min(x + bw + pad, w), min(y + bh + pad, h)
+    M[:, 2] -= (x0, y0)
+    mir = cv2.warpAffine(img, M, (x1 - x0, y1 - y0), borderMode=cv2.BORDER_REFLECT)
+    ys, xs = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    side = np.clip(-((xs - top[0]) * n[0] + (ys - top[1]) * n[1]) / (size * 0.04) + 0.5, 0, 1)
+    face = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(face, cv2.convexHull(lm[OVAL].astype(np.int32)), 255)
+    face = face[y0:y1, x0:x1]
+    e = int(size * 0.04) * 2 + 1
+    face = cv2.GaussianBlur(cv2.erode(face, np.ones((e, e), np.uint8)), (0, 0), size * 0.03) / 255.0
+    a = (side * face)[..., None]
+    img[y0:y1, x0:x1] = (mir * a + img[y0:y1, x0:x1] * (1 - a)).astype(np.uint8)
+    return img
+
+
+def big_eyes(img, lm, scale=2.0):
+    for eye in EYES:
+        c, (a, b), ang = _ellipse(lm[eye], 1.0)
+        r = max(a, b) * 2.0
+        img = pinch(img, c, (r, r), ang, scale, scale, 0.42)
+    return img
+
+
+def big_mouth(img, lm, scale=1.8):
+    c, axes, ang = _ellipse(lm[LIPS], 1.5)
+    return pinch(img, c, axes, ang, scale, scale, 0.5)
+
+
+EFFECTS = {"tiny": tiny_face, "eyes": tiny_eyes, "squint": squint, "thatcher": thatcher,
+           "moutheyes": mouth_eyes, "mirror": symmetry, "bigeyes": big_eyes, "bigmouth": big_mouth}
+
+
+def apply(img, effect, found=None):
+    found = faces(img) if found is None else found
     for lm in found:
         img = EFFECTS[effect](img, lm)
     return img, len(found)
